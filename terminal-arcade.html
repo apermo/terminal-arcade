@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0a; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+  #terminal {
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 0;
+    width: 620px;
+    box-shadow: 0 0 40px rgba(0,255,0,0.05);
+    overflow: hidden;
+  }
+  #titlebar {
+    background: #1a1a1a;
+    padding: 8px 12px;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    border-bottom: 1px solid #333;
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.r { background: #ff5f57; }
+  .dot.y { background: #febc2e; }
+  .dot.g { background: #28c840; }
+  .tb-btn {
+    background: #222;
+    color: #0f0;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 4px 12px;
+    font-family: 'Courier New', 'Consolas', monospace;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .tb-btn:hover { background: #333; border-color: #0f0; }
+  #mute-btn { margin-left: auto; }
+  #new-game-btn { margin-left: 6px; }
+  #screen {
+    font-family: 'Courier New', 'Consolas', monospace;
+    font-size: 14px;
+    line-height: 1.3;
+    color: #0f0;
+    background: #111;
+    padding: 16px;
+    white-space: pre;
+    min-height: 480px;
+    overflow: hidden;
+  }
+  .dim { color: #555; }
+  .bright { color: #0f0; }
+  .white { color: #ccc; }
+  .cyan { color: #0ff; }
+  .yellow { color: #ff0; }
+  .red { color: #f55; }
+  .magenta { color: #f5f; }
+</style>
+</head>
+<body>
+<div id="terminal">
+  <div id="titlebar">
+    <div class="dot r"></div>
+    <div class="dot y"></div>
+    <div class="dot g"></div>
+    <button id="mute-btn" class="tb-btn">SND</button>
+    <button id="new-game-btn" class="tb-btn">NEW GAME</button>
+  </div>
+  <div id="screen"></div>
+</div>
+<script>
+// ═══════════════════════════════════════════════════════════
+// Simple Neural Network - feedforward with backpropagation
+// ═══════════════════════════════════════════════════════════
+class SimpleNN {
+  constructor(sizes) {
+    this.sizes = sizes;
+    this.weights = [];
+    this.biases = [];
+    for (let i = 0; i < sizes.length - 1; i++) {
+      const s = Math.sqrt(2 / (sizes[i] + sizes[i + 1]));
+      this.weights.push(Array.from({length: sizes[i + 1]}, () =>
+        Array.from({length: sizes[i]}, () => (Math.random() * 2 - 1) * s)));
+      this.biases.push(Array.from({length: sizes[i + 1]}, () =>
+        (Math.random() * 2 - 1) * 0.1));
+    }
+  }
+
+  _sig(x) { return 1 / (1 + Math.exp(-Math.max(-10, Math.min(10, x)))); }
+
+  run(input) {
+    let a = input;
+    this._a = [a];
+    for (let l = 0; l < this.weights.length; l++) {
+      const next = new Array(this.weights[l].length);
+      for (let j = 0; j < this.weights[l].length; j++) {
+        let sum = this.biases[l][j];
+        for (let k = 0; k < a.length; k++) sum += this.weights[l][j][k] * a[k];
+        next[j] = this._sig(sum);
+      }
+      a = next;
+      this._a.push(a);
+    }
+    return a;
+  }
+
+  train(data, lr, epochs) {
+    lr = lr || 0.05;
+    epochs = epochs || 60;
+    for (let e = 0; e < epochs; e++) {
+      for (const d of data) {
+        this.run(d.input);
+        const L = this.weights.length;
+        const deltas = new Array(L);
+        const out = this._a[L];
+        deltas[L - 1] = out.map((o, i) => (d.output[i] - o) * o * (1 - o));
+        for (let l = L - 2; l >= 0; l--) {
+          deltas[l] = this._a[l + 1].map((a, j) => {
+            let err = 0;
+            for (let k = 0; k < this.weights[l + 1].length; k++)
+              err += deltas[l + 1][k] * this.weights[l + 1][k][j];
+            return err * a * (1 - a);
+          });
+        }
+        for (let l = 0; l < L; l++)
+          for (let j = 0; j < this.weights[l].length; j++) {
+            for (let k = 0; k < this.weights[l][j].length; k++)
+              this.weights[l][j][k] += lr * deltas[l][j] * this._a[l][k];
+            this.biases[l][j] += lr * deltas[l][j];
+          }
+      }
+    }
+  }
+
+  toJSON() { return { s: this.sizes, w: this.weights, b: this.biases }; }
+
+  static fromJSON(obj) {
+    const nn = new SimpleNN(obj.s);
+    nn.weights = obj.w;
+    nn.biases = obj.b;
+    return nn;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Game Constants
+// ═══════════════════════════════════════════════════════════
+const scr = document.getElementById('screen');
+const W = 10, H = 20;
+
+const PIECES = [
+  {s:[[1,1],[1,1]], c:'\u2588'},
+  {s:[[0,1,0],[1,1,1]], c:'\u2593'},
+  {s:[[1,1,1,1]], c:'\u2591'},
+  {s:[[1,1,0],[0,1,1]], c:'\u2592'},
+  {s:[[0,1,1],[1,1,0]], c:'\u256C'},
+  {s:[[1,0],[1,0],[1,1]], c:'\u2590'},
+  {s:[[0,1],[0,1],[1,1]], c:'\u258C'},
+];
+
+const COLORS = ['', 'white', 'magenta', 'cyan', 'yellow', 'red', 'bright', 'white'];
+
+// ═══════════════════════════════════════════════════════════
+// Game State
+// ═══════════════════════════════════════════════════════════
+let board, score, lines, level, tick;
+let cur, curX, curY, curType, nextType;
+let phase = 'boot', bootLine = 0, gameOver;
+let target, rotDone;
+let loopTimer, restartTimer;
+
+// ═══════════════════════════════════════════════════════════
+// Audio - 8-bit chiptune via Web Audio API
+// ═══════════════════════════════════════════════════════════
+let audioCtx, masterGain, isMuted = false;
+
+const NOTE_FREQ = {
+  'A2': 110.00, 'E3': 164.81, 'A3': 220.00, 'B3': 246.94,
+  'C4': 261.63, 'D4': 293.66, 'E4': 329.63, 'F4': 349.23,
+  'G4': 392.00, 'A4': 440.00,
+};
+
+// Korobeiniki melody: [note, beats] (null = rest)
+const MELODY = [
+  // A section bars 1-4
+  ['E4',1],['B3',.5],['C4',.5],['D4',1],['C4',.5],['B3',.5],
+  ['A3',1],['A3',.5],['C4',.5],['E4',1],['D4',.5],['C4',.5],
+  ['B3',1.5],['C4',.5],['D4',1],['E4',1],
+  ['C4',1],['A3',1],['A3',2],
+  // A section bars 5-8
+  [null,.5],['D4',1],['F4',.5],['A4',1],['G4',.5],['F4',.5],
+  ['E4',1.5],['C4',.5],['E4',1],['D4',.5],['C4',.5],
+  ['B3',1],['B3',.5],['C4',.5],['D4',1],['E4',1],
+  ['C4',1],['A3',1],['A3',1],[null,1],
+];
+
+// Bass: chord roots Am-E-Am-E (4 beats each)
+const BASS = [
+  ['A2',4],['E3',4],['A2',4],['E3',4],
+  ['A2',4],['E3',4],['A2',4],['E3',4],
+];
+
+const BEAT_SEC = 60 / 140;
+
+let melodyIdx = 0, bassIdx = 0;
+let melodyTime = 0, bassTime = 0;
+let scheduleTimer = null;
+
+function initAudio() {
+  if (audioCtx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  audioCtx = new AC();
+  masterGain = audioCtx.createGain();
+  masterGain.connect(audioCtx.destination);
+  masterGain.gain.value = isMuted ? 0 : 0.6;
+}
+
+function playNote(freq, startTime, duration, wave, gain) {
+  const osc = audioCtx.createOscillator();
+  const env = audioCtx.createGain();
+  osc.type = wave;
+  osc.frequency.value = freq;
+  env.gain.setValueAtTime(gain, startTime);
+  env.gain.setValueAtTime(gain, startTime + duration * 0.7);
+  env.gain.linearRampToValueAtTime(0, startTime + duration * 0.9);
+  osc.connect(env);
+  env.connect(masterGain);
+  osc.start(startTime);
+  osc.stop(startTime + duration);
+}
+
+function scheduleNotes() {
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  const ahead = audioCtx.currentTime + 0.2;
+
+  while (melodyTime < ahead) {
+    const [note, beats] = MELODY[melodyIdx % MELODY.length];
+    const dur = beats * BEAT_SEC;
+    if (note && NOTE_FREQ[note]) playNote(NOTE_FREQ[note], melodyTime, dur, 'square', 0.25);
+    melodyTime += dur;
+    melodyIdx++;
+  }
+
+  while (bassTime < ahead) {
+    const [note, beats] = BASS[bassIdx % BASS.length];
+    const dur = beats * BEAT_SEC;
+    if (note && NOTE_FREQ[note]) playNote(NOTE_FREQ[note], bassTime, dur, 'triangle', 0.2);
+    bassTime += dur;
+    bassIdx++;
+  }
+}
+
+function startMelody() {
+  initAudio();
+  if (!audioCtx) return;
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  melodyIdx = 0; bassIdx = 0;
+  melodyTime = audioCtx.currentTime;
+  bassTime = audioCtx.currentTime;
+  if (scheduleTimer) clearInterval(scheduleTimer);
+  scheduleTimer = setInterval(scheduleNotes, 100);
+  scheduleNotes();
+}
+
+function stopMelody() {
+  if (scheduleTimer) { clearInterval(scheduleTimer); scheduleTimer = null; }
+}
+
+function playLineClearSound(numLines) {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const notes = [523.25, 659.25, 783.99, 1046.50]; // C5 E5 G5 C6
+  const speed = numLines >= 4 ? 0.06 : 0.08;
+  const pitchMul = 1 + (numLines - 1) * 0.15;
+  for (let i = 0; i < notes.length; i++)
+    playNote(notes[i] * pitchMul, now + i * speed, speed * 1.5, 'square', 0.3);
+  if (numLines >= 4) {
+    for (let i = 0; i < notes.length; i++)
+      playNote(notes[i] * pitchMul * 1.5, now + (notes.length + i) * speed, speed * 2, 'square', 0.25);
+  }
+}
+
+function playGameOverSound() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const env = audioCtx.createGain();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(440, now);
+  osc.frequency.linearRampToValueAtTime(110, now + 1.5);
+  env.gain.setValueAtTime(0.3, now);
+  env.gain.linearRampToValueAtTime(0, now + 1.5);
+  osc.connect(env);
+  env.connect(masterGain);
+  osc.start(now);
+  osc.stop(now + 1.5);
+}
+
+// ═══════════════════════════════════════════════════════════
+// Neural Network State
+// ═══════════════════════════════════════════════════════════
+// 7 board features + 7 one-hot next piece type = 14 inputs
+const NN_LAYERS = [14, 20, 10, 1];
+
+let nn = new SimpleNN(NN_LAYERS);
+let nnTrained = false;
+let moveHistory = [];
+let stats = { games: 0, best: 0, recent: [] };
+
+// ═══════════════════════════════════════════════════════════
+// Server Persistence (PHP API)
+// ═══════════════════════════════════════════════════════════
+const API = 'api.php';
+
+async function serverLoad(action) {
+  try {
+    const res = await fetch(`${API}?action=${action}`);
+    return await res.json();
+  } catch (e) { return null; }
+}
+
+async function serverSave(action, data) {
+  try {
+    await fetch(`${API}?action=${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+  } catch (e) { /* ignore */ }
+}
+
+async function loadState() {
+  const model = await serverLoad('load-model');
+  if (model && model.s) { nn = SimpleNN.fromJSON(model); nnTrained = true; }
+  const s = await serverLoad('load-stats');
+  if (s && s.games !== undefined) stats = s;
+}
+
+async function saveState() {
+  await Promise.all([
+    serverSave('save-model', nn.toJSON()),
+    serverSave('save-stats', stats)
+  ]);
+}
+
+async function loadTrainingBuffer() {
+  const d = await serverLoad('load-training');
+  return Array.isArray(d) ? d : [];
+}
+
+async function saveTrainingBuffer(buf) {
+  await serverSave('save-training', buf);
+}
+
+// ═══════════════════════════════════════════════════════════
+// Feature Extraction
+// ═══════════════════════════════════════════════════════════
+function extractFeatures(brd) {
+  const heights = Array(W).fill(0);
+  for (let x = 0; x < W; x++)
+    for (let y = 0; y < H; y++)
+      if (brd[y][x]) { heights[x] = H - y; break; }
+
+  const aggHeight = heights.reduce((a, v) => a + v, 0);
+  const maxH = Math.max(...heights);
+
+  let holes = 0;
+  for (let x = 0; x < W; x++) {
+    let found = false;
+    for (let y = 0; y < H; y++) {
+      if (brd[y][x]) found = true;
+      else if (found) holes++;
+    }
+  }
+
+  let bump = 0;
+  for (let x = 0; x < W - 1; x++) bump += Math.abs(heights[x] - heights[x + 1]);
+
+  let complete = 0;
+  for (let y = 0; y < H; y++) if (brd[y].every(c => c > 0)) complete++;
+
+  let wells = 0;
+  for (let x = 0; x < W; x++)
+    for (let y = 0; y < H; y++)
+      if (!brd[y][x] && (x === 0 || brd[y][x - 1]) && (x === W - 1 || brd[y][x + 1]))
+        wells++;
+
+  const avg = aggHeight / W;
+  let variance = 0;
+  for (let x = 0; x < W; x++) variance += (heights[x] - avg) ** 2;
+  variance /= W;
+
+  return [
+    aggHeight / (W * H),
+    complete / 4,
+    holes / 40,
+    bump / 40,
+    maxH / H,
+    wells / 20,
+    variance / (H * H)
+  ];
+}
+
+// ═══════════════════════════════════════════════════════════
+// AI - Neural Network with next-piece lookahead
+// ═══════════════════════════════════════════════════════════
+function oneHotPiece(type) {
+  const oh = [0, 0, 0, 0, 0, 0, 0];
+  oh[type] = 1;
+  return oh;
+}
+
+function buildInput(boardFeatures, pieceType) {
+  return boardFeatures.concat(oneHotPiece(pieceType));
+}
+
+// Score a board state for the heuristic fallback
+function heuristicScore(features) {
+  // Super-linear line clear bonus: heavily reward multi-line clears
+  // 0→0, 1→1.5, 2→5.0, 3→10.5, 4 lines→18.0
+  const lc = features[1]; // complete / 4
+  const lineBonus = lc * 2 + lc * lc * 16;
+
+  return lineBonus
+    - features[0] * 3              // aggregate height
+    - features[2] * 8              // holes (heavy penalty)
+    - features[2] * features[2] * 5 // exponential hole penalty
+    - features[3] * 1.5            // bumpiness (reduced to allow well formation)
+    - features[4] * 3              // max height
+    + 0.5;
+}
+
+// Find the best score achievable by placing a piece on a given board
+// Uses drop-only positions for speed (lookahead doesn't need tuck precision)
+function bestNextScore(brd, pieceType) {
+  let best = -Infinity;
+  let shape = PIECES[pieceType].s.map(r => [...r]);
+  for (let rot = 0; rot < 4; rot++) {
+    const positions = findDropPositions(shape, brd);
+    for (const pos of positions) {
+      const tb = simulatePlaceOn(shape, pos.x, pos.y, brd);
+      const f = extractFeatures(tb);
+      const nnW = nnTrained ? Math.min(0.8, stats.games / 30) : 0;
+      const s = nnW > 0
+        ? heuristicScore(f) * (1 - nnW) + nn.run(buildInput(f, pieceType))[0] * nnW
+        : heuristicScore(f);
+      if (s > best) best = s;
+    }
+    shape = rotate(shape);
+  }
+  return best === -Infinity ? 0 : best;
+}
+
+// fits() against an arbitrary board (not the global one)
+function fitsBoard(shape, ox, oy, brd) {
+  for (let y = 0; y < shape.length; y++)
+    for (let x = 0; x < shape[y].length; x++)
+      if (shape[y][x]) {
+        const nx = ox + x, ny = oy + y;
+        if (nx < 0 || nx >= W || ny >= H) return false;
+        if (ny >= 0 && brd[ny][nx]) return false;
+      }
+  return true;
+}
+
+function simulatePlaceOn(shape, tx, ty, brd) {
+  const b = brd.map(r => [...r]);
+  for (let y = 0; y < shape.length; y++)
+    for (let x = 0; x < shape[y].length; x++)
+      if (shape[y][x] && ty + y >= 0 && ty + y < H)
+        b[ty + y][tx + x] = 1;
+  return b;
+}
+
+// Find positions reachable by dropping from the top (normal mode)
+function findDropPositions(shape, brd) {
+  const positions = [];
+  for (let tx = -2; tx < W; tx++) {
+    if (!fitsBoard(shape, tx, 0, brd)) continue;
+    let ty = 0;
+    while (fitsBoard(shape, tx, ty + 1, brd)) ty++;
+    positions.push({ x: tx, y: ty });
+  }
+  return positions;
+}
+
+function aiMove() {
+  let bestScore = -Infinity, bestX = curX, bestRot = 0;
+  let bestFeatures = null;
+  let shape = cur.map(r => [...r]);
+
+  for (let rot = 0; rot < 4; rot++) {
+    const positions = findDropPositions(shape, board);
+
+    for (const pos of positions) {
+      const testBoard = simulatePlaceOn(shape, pos.x, pos.y, board);
+      const features = extractFeatures(testBoard);
+
+      // Gradual blend: heuristic dominates early, NN takes over after ~30 games
+      const nnWeight = nnTrained ? Math.min(0.8, stats.games / 30) : 0;
+      const hScore = heuristicScore(features);
+      const nScore = nnWeight > 0 ? nn.run(buildInput(features, nextType))[0] : 0;
+      let s = hScore * (1 - nnWeight) + nScore * nnWeight;
+
+      const nextBest = bestNextScore(testBoard, nextType);
+      s = s * 0.6 + nextBest * 0.4;
+
+      if (s > bestScore) {
+        bestScore = s; bestX = pos.x; bestRot = rot;
+        bestFeatures = features;
+      }
+    }
+    shape = rotate(shape);
+  }
+
+  if (bestFeatures) {
+    moveHistory.push({
+      features: buildInput(bestFeatures, nextType),
+      lines: lines,
+      score: score
+    });
+  }
+
+  // Choose shortest rotation path: CW or CCW
+  // rot=0: no rotation, rot=1: 1 CW, rot=2: 2 either way, rot=3: 1 CCW
+  const rotDir = bestRot <= 2 ? 1 : -1;  // 1=CW, -1=CCW
+  const rotSteps = bestRot <= 2 ? bestRot : 4 - bestRot;
+
+  return { x: bestX, rot: rotSteps, rotDir: rotDir };
+}
+
+// ═══════════════════════════════════════════════════════════
+// Training - runs after each game over
+// ═══════════════════════════════════════════════════════════
+async function trainAfterGame() {
+  if (moveHistory.length < 5) return;
+
+  const totalMoves = moveHistory.length;
+  const finalScore = score;
+  const bestKnown = Math.max(stats.best, 1000);
+
+  const newPairs = moveHistory.map((m, i) => {
+    const f = m.features;
+    // f[0]=aggHeight, f[1]=lines, f[2]=holes, f[3]=bump, f[4]=maxH
+    const survival = i / totalMoves;
+    const gameQuality = Math.min(finalScore / bestKnown, 1);
+
+    // Board quality is the primary signal (objective, not circular)
+    const holePenalty = f[2] * f[2];
+    const boardQuality =
+        (1 - holePenalty) * 0.35   // holes punished hard (exponential)
+      + f[1] * 0.25               // line clears rewarded
+      + (1 - f[0]) * 0.15         // lower height preferred
+      + (1 - f[3]) * 0.1          // less bumpy preferred
+      + (1 - f[4]) * 0.15;        // lower max height preferred
+
+    // Moves creating many holes get heavily penalized
+    const holeOverride = f[2] > 0.3 ? 0.5 : 1.0;
+
+    // Board features dominate; game score is minor signal to avoid death spiral
+    const quality = Math.min(1, Math.max(0,
+      (gameQuality * 0.15 + boardQuality * 0.6 + survival * 0.25) * holeOverride
+    ));
+    return { input: f, output: [quality] };
+  });
+
+  let buffer = await loadTrainingBuffer();
+  buffer = buffer.concat(newPairs);
+  if (buffer.length > 1000) buffer = buffer.slice(-1000);
+
+  // Sample for training (cap at 300 for speed)
+  let sample = buffer;
+  if (sample.length > 300) {
+    sample = [];
+    const used = new Set();
+    while (sample.length < 300) {
+      const idx = Math.floor(Math.random() * buffer.length);
+      if (!used.has(idx)) { used.add(idx); sample.push(buffer[idx]); }
+    }
+  }
+
+  nn.train(sample, 0.03, 80);
+  nnTrained = true;
+
+  stats.games++;
+  if (finalScore > stats.best) stats.best = finalScore;
+  stats.recent.push(finalScore);
+  if (stats.recent.length > 10) stats.recent.shift();
+
+  // Save everything to server in parallel
+  await Promise.all([
+    saveState(),
+    saveTrainingBuffer(buffer)
+  ]);
+}
+
+// ═══════════════════════════════════════════════════════════
+// Game Logic
+// ═══════════════════════════════════════════════════════════
+function resetGame() {
+  stopMelody();
+  board = Array.from({length: H}, () => Array(W).fill(0));
+  score = 0; lines = 0; level = 1; tick = 0;
+  cur = null; curX = 0; curY = 0; curType = 0;
+  nextType = Math.floor(Math.random() * PIECES.length);
+  gameOver = false;
+  target = null; rotDone = 0;
+  moveHistory = [];
+  lastGravityTime = 0; lastActionTime = 0; lockStartTime = 0;
+  if (loopTimer) { clearTimeout(loopTimer); loopTimer = null; }
+  if (restartTimer) { clearInterval(restartTimer); restartTimer = null; }
+}
+
+function spawnPiece() {
+  curType = nextType;
+  nextType = Math.floor(Math.random() * PIECES.length);
+  cur = PIECES[curType].s.map(r => [...r]);
+  curX = Math.floor((W - cur[0].length) / 2);
+  curY = 0;
+  if (!fits(cur, curX, curY)) gameOver = true;
+}
+
+function fits(shape, ox, oy) {
+  for (let y = 0; y < shape.length; y++)
+    for (let x = 0; x < shape[y].length; x++)
+      if (shape[y][x]) {
+        const nx = ox + x, ny = oy + y;
+        if (nx < 0 || nx >= W || ny >= H) return false;
+        if (ny >= 0 && board[ny][nx]) return false;
+      }
+  return true;
+}
+
+function lock() {
+  let aboveBoard = false;
+  for (let y = 0; y < cur.length; y++)
+    for (let x = 0; x < cur[y].length; x++)
+      if (cur[y][x]) {
+        const ny = curY + y;
+        if (ny < 0) aboveBoard = true;
+        else board[ny][curX + x] = curType + 1;
+      }
+  // Game over if any part of the piece locked above the visible board
+  if (aboveBoard) { gameOver = true; return; }
+  clearLines();
+  spawnPiece();
+}
+
+function clearLines() {
+  let cleared = 0;
+  for (let y = H - 1; y >= 0; y--) {
+    if (board[y].every(c => c > 0)) {
+      board.splice(y, 1);
+      board.unshift(Array(W).fill(0));
+      cleared++;
+      y++;
+    }
+  }
+  if (cleared) {
+    lines += cleared;
+    score += [0, 100, 300, 500, 800][cleared] * level;
+    level = Math.floor(lines / 10) + 1;
+    playLineClearSound(cleared);
+  }
+}
+
+// Clockwise rotation
+function rotateCW(shape) {
+  const h = shape.length, w = shape[0].length;
+  const r = Array.from({length: w}, () => Array(h).fill(0));
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++)
+      r[x][h - 1 - y] = shape[y][x];
+  return r;
+}
+
+// Counter-clockwise rotation
+function rotateCCW(shape) {
+  const h = shape.length, w = shape[0].length;
+  const r = Array.from({length: w}, () => Array(h).fill(0));
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++)
+      r[w - 1 - x][y] = shape[y][x];
+  return r;
+}
+
+// Keep 'rotate' as alias for CW (used in AI evaluation loops)
+const rotate = rotateCW;
+
+// ═══════════════════════════════════════════════════════════
+// Game Loop - Normal Mode
+// Gravity and AI actions run on separate clocks:
+// - Gravity speeds up per level (classic arcade style)
+// - AI actions run at a fixed rate (simulates human reaction time)
+// At high levels, gravity outpaces the AI just like it would a human.
+// ═══════════════════════════════════════════════════════════
+const AI_ACTION_MS = 60;     // fixed: AI can act every 60ms (skilled human)
+
+function lockDelayMs() {
+  // Lock delay shrinks with level: 300ms through level 19, 0ms at level 25+
+  // Levels 20-24 gradually lose lock delay, creating the difficulty wall at 25
+  if (level >= 25) return 0;
+  if (level >= 20) return Math.max(0, 300 - (level - 20) * 60);
+  return 300;
+}
+let lastGravityTime = 0;
+let lastActionTime = 0;
+let lockStartTime = 0;
+
+function gravityInterval() {
+  // Classic curve: level 1 = 500ms, level 10 = ~130ms, level 20 = ~30ms, 29+ = 10ms
+  return Math.max(10, Math.round(500 * Math.pow(0.87, level - 1)));
+}
+
+function gameLoop() {
+  if (gameOver) {
+    stopMelody();
+    playGameOverSound();
+    trainAfterGame().then(() => startRestartCountdown());
+    return;
+  }
+
+  const now = performance.now();
+  if (!target) { target = aiMove(); rotDone = 0; lockStartTime = 0; }
+
+  let moved = false;
+  const prevX = curX, prevY = curY;
+
+  // AI actions at fixed rate (independent of gravity speed)
+  if (now - lastActionTime >= AI_ACTION_MS) {
+    lastActionTime = now;
+
+    // Rotate toward target (CW or CCW, whichever is shorter)
+    if (rotDone < target.rot) {
+      const r = target.rotDir === 1 ? rotateCW(cur) : rotateCCW(cur);
+      if (fits(r, curX, curY)) { cur = r; rotDone++; moved = true; }
+      else rotDone = target.rot; // skip if blocked
+    }
+    // Move horizontally - even after landing (tuck moves)
+    else if (curX !== target.x) {
+      const dx = target.x > curX ? 1 : -1;
+      if (fits(cur, curX + dx, curY)) { curX += dx; moved = true; }
+      else if (!fits(cur, curX, curY + 1)) target.x = curX;
+    }
+    // Soft drop: AI can push piece down one row as an action
+    else if (fits(cur, curX, curY + 1)) {
+      curY++; moved = true; lockStartTime = 0;
+    }
+  }
+
+  // Gravity: drops piece at level-dependent speed
+  if (now - lastGravityTime >= gravityInterval()) {
+    lastGravityTime = now;
+    if (fits(cur, curX, curY + 1)) {
+      curY++;
+      lockStartTime = 0;
+    }
+  }
+
+  // Lock delay: piece stays on ground briefly (allows tuck slides at low levels)
+  // At level 20+ there's no delay — pieces lock instantly
+  if (!fits(cur, curX, curY + 1)) {
+    const delay = lockDelayMs();
+    if (delay === 0) {
+      lock(); target = null; lockStartTime = 0;
+    } else {
+      if (!lockStartTime) lockStartTime = now;
+      if (moved && (curX !== prevX || curY !== prevY)) lockStartTime = now;
+      if (now - lockStartTime >= delay) {
+        lock(); target = null; lockStartTime = 0;
+      }
+    }
+  }
+
+  render();
+  loopTimer = setTimeout(gameLoop, 16); // ~60fps render
+}
+
+// ═══════════════════════════════════════════════════════════
+// Restart & New Game
+// ═══════════════════════════════════════════════════════════
+let countdown = 5;
+
+function startRestartCountdown() {
+  countdown = 5;
+  renderGameOver();
+  restartTimer = setInterval(() => {
+    countdown--;
+    if (countdown <= 0) {
+      clearInterval(restartTimer);
+      restartTimer = null;
+      startGame();
+    } else {
+      renderGameOver();
+    }
+  }, 1000);
+}
+
+function startGame() {
+  resetGame();
+  spawnPiece();
+  startMelody();
+  gameLoop();
+}
+
+function newGame() {
+  if (phase === 'boot') return;
+  phase = 'game';
+  initAudio();
+  if (!gameOver && moveHistory.length > 10) trainAfterGame();
+  startGame();
+}
+
+document.getElementById('new-game-btn').addEventListener('click', newGame);
+
+document.getElementById('mute-btn').addEventListener('click', () => {
+  isMuted = !isMuted;
+  if (masterGain) masterGain.gain.value = isMuted ? 0 : 0.6;
+  document.getElementById('mute-btn').textContent = isMuted ? 'SND*' : 'SND';
+});
+
+// Resume audio on any user gesture (browsers require gesture to start AudioContext)
+document.addEventListener('click', () => {
+  initAudio();
+  if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume().then(() => {
+      if (phase === 'game' && !gameOver && !scheduleTimer) startMelody();
+    });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// Rendering - Normal Mode
+// ═══════════════════════════════════════════════════════════
+function render() {
+  const grid = board.map(r => [...r]);
+  if (cur) {
+    let gy = curY;
+    while (fits(cur, curX, gy + 1)) gy++;
+    for (let y = 0; y < cur.length; y++)
+      for (let x = 0; x < cur[y].length; x++)
+        if (cur[y][x] && gy + y >= 0 && gy + y < H)
+          if (!grid[gy + y][curX + x]) grid[gy + y][curX + x] = -1;
+    for (let y = 0; y < cur.length; y++)
+      for (let x = 0; x < cur[y].length; x++)
+        if (cur[y][x] && curY + y >= 0 && curY + y < H)
+          grid[curY + y][curX + x] = curType + 1;
+  }
+
+  const aiLabel = nnTrained ? 'neural' : 'heuristic';
+  let out = '';
+  out += `<span class="cyan"> BLOCK DROP</span>  <span class="dim">ai:</span><span class="bright">${aiLabel}</span>  <span class="dim">gen:</span><span class="white">${stats.games}</span>\n`;
+  out += `<span class="dim"> score:</span> <span class="yellow">${String(score).padStart(6)}</span>  <span class="dim">lines:</span> <span class="white">${lines}</span>  <span class="dim">lvl:</span> <span class="white">${level}</span>  <span class="dim">best:</span> <span class="cyan">${stats.best}</span>\n`;
+  // Prepare next piece preview rows
+  const np = PIECES[nextType];
+  const nc = COLORS[nextType + 1];
+  const NEXT_START_ROW = 4; // row where "next:" label appears
+  const nextRows = [];
+  nextRows.push('<span class="dim">  next:</span>');
+  for (let py = 0; py < np.s.length; py++) {
+    let row = '  ';
+    for (let px = 0; px < np.s[py].length; px++)
+      row += np.s[py][px] ? `<span class="${nc}">${np.c}${np.c}</span>` : '  ';
+    nextRows.push(row);
+  }
+
+  out += ' \u250C' + '\u2500\u2500'.repeat(W) + '\u2510\n';
+
+  for (let y = 0; y < H; y++) {
+    out += ' \u2502';
+    for (let x = 0; x < W; x++) {
+      const v = grid[y][x];
+      if (v === -1) out += '<span class="dim">\u2591\u2591</span>';
+      else if (v === 0) out += '  ';
+      else {
+        const ch = PIECES[v - 1].c;
+        out += `<span class="${COLORS[v]}">${ch}${ch}</span>`;
+      }
+    }
+    out += '\u2502';
+
+    // Next piece preview to the right of the board
+    const ni = y - NEXT_START_ROW;
+    if (ni >= 0 && ni < nextRows.length) out += nextRows[ni];
+
+    out += '\n';
+  }
+  out += ' \u2514' + '\u2500\u2500'.repeat(W) + '\u2518\n';
+
+  scr.innerHTML = out;
+}
+
+function renderGameOver() {
+  const avg = stats.recent.length > 1
+    ? Math.round(stats.recent.reduce((a, v) => a + v, 0) / stats.recent.length)
+    : score;
+
+  let out = '\n\n';
+  out += '<span class="red">  \u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557</span>\n';
+  out += '<span class="red">  \u2551     GAME  OVER       \u2551</span>\n';
+  out += '<span class="red">  \u255A\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255D</span>\n\n';
+  out += `<span class="white">  final score: ${score}</span>\n`;
+  out += `<span class="white">  lines cleared: ${lines}</span>\n`;
+  out += `<span class="white">  level reached: ${level}</span>\n\n`;
+  out += `<span class="dim">  generation: ${stats.games}  best: ${stats.best}  avg: ${avg}</span>\n`;
+  out += '<span class="bright">  neural network trained \u2713</span>\n\n';
+  out += `<span class="yellow">  restarting in ${countdown}s...</span>\n`;
+  scr.innerHTML = out;
+}
+
+// ═══════════════════════════════════════════════════════════
+// Boot Sequence
+// ═══════════════════════════════════════════════════════════
+function buildBootSequence() {
+  return [
+    {t:'<span class="dim">$ terminal-arcade v0.2.0</span>', d:400},
+    {t:'<span class="dim">loading game engine...</span>', d:300},
+    {t:'<span class="dim">mounting /dev/fun...</span>', d:250},
+    {t:'<span class="dim">initializing neural network [14\u219220\u219210\u21921]...</span>', d:350},
+    {t:`<span class="dim">loading weights... ${nnTrained ? '<span class="bright">found (' + stats.games + ' games learned)</span>' : 'none found'}</span>`, d:300},
+    {t:'<span class="dim">calibrating pixels... done</span>', d:200},
+    {t:'', d:200},
+    {t:'<span class="cyan">available commands:</span>', d:100},
+    {t:'  <span class="white">blocks</span>     <span class="dim">- falling block puzzle</span>', d:80},
+    {t:'  <span class="white">regex</span>      <span class="dim">- regex golf challenge</span>', d:80},
+    {t:'  <span class="white">crosswalk</span>  <span class="dim">- dodge traffic</span>', d:80},
+    {t:'  <span class="white">paint</span>      <span class="dim">- draw your background</span>', d:80},
+    {t:'  <span class="white">quiz</span>       <span class="dim">- guesser game</span>', d:80},
+    {t:'  <span class="white">adventure</span>  <span class="dim">- the server room</span>', d:80},
+    {t:'', d:200},
+    {t:'<span class="yellow">$ blocks --demo --ai=neural</span>', d:600},
+    {t:'<span class="dim">starting Block Drop in neural AI mode...</span>', d:500},
+    {t:'', d:300},
+  ];
+}
+
+let bootSequence;
+
+function runBoot() {
+  if (bootLine >= bootSequence.length) {
+    phase = 'game';
+    startGame();
+    return;
+  }
+  let html = '';
+  for (let i = 0; i <= bootLine; i++) html += bootSequence[i].t + '\n';
+  if (bootLine < bootSequence.length - 1) html += '<span class="bright">\u258A</span>';
+  scr.innerHTML = html;
+  bootLine++;
+  setTimeout(runBoot, bootSequence[bootLine - 1].d);
+}
+
+// ═══════════════════════════════════════════════════════════
+// Init - load from server, then boot
+// ═══════════════════════════════════════════════════════════
+loadState().then(() => {
+  bootSequence = buildBootSequence();
+  setTimeout(runBoot, 500);
+});
+</script>
+</body>
+</html>

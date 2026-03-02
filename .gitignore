@@ -1,0 +1,11 @@
+# Runtime data (model weights, training data)
+data/
+
+# IDE
+.idea/
+
+# Playwright MCP logs
+.playwright-mcp/
+
+# Claude Code
+.claude/
