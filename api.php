@@ -1,9 +1,6 @@
 <?php
 
 header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(204);
@@ -12,70 +9,106 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 
 $dataDir = __DIR__ . '/data';
 if (!is_dir($dataDir)) {
-    mkdir($dataDir, 0755, true);
+    mkdir($dataDir, 0700, true);
+    // Block direct web access to stored JSON files
+    file_put_contents("$dataDir/.htaccess", "Deny from all\n");
 }
 
 $action = $_GET['action'] ?? '';
 
+// Enforce POST for write endpoints
+if (str_starts_with($action, 'save-') && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+    http_response_code(405);
+    echo json_encode(['error' => 'Method not allowed']);
+    exit;
+}
+
+// Max payload sizes (bytes) per save endpoint
+$sizeLimits = [
+    'save-model'    => 102400,  // 100 KB
+    'save-training' => 524288,  // 512 KB
+    'save-stats'    => 2048,    //   2 KB
+];
+
+/**
+ * Read request body, validate JSON + structure, write to disk.
+ */
+function saveJson(string $file, int $maxBytes, callable $validate): void {
+    $raw = file_get_contents('php://input', false, null, 0, $maxBytes + 1);
+    if ($raw === false || $raw === '') {
+        http_response_code(400);
+        echo json_encode(['error' => 'No data']);
+        return;
+    }
+    if (strlen($raw) > $maxBytes) {
+        http_response_code(413);
+        echo json_encode(['error' => 'Payload too large']);
+        return;
+    }
+
+    $data = json_decode($raw, true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Invalid JSON']);
+        return;
+    }
+    if (!$validate($data)) {
+        http_response_code(422);
+        echo json_encode(['error' => 'Invalid data structure']);
+        return;
+    }
+
+    // Re-encode to strip anything json_decode+encode wouldn't preserve
+    file_put_contents($file, json_encode($data), LOCK_EX);
+    echo json_encode(['ok' => true]);
+}
+
+function loadJson(string $file, mixed $default): void {
+    if (file_exists($file) && is_readable($file)) {
+        readfile($file);
+    } else {
+        echo json_encode($default);
+    }
+}
+
 switch ($action) {
     case 'load-model':
-        $file = $dataDir . '/model.json';
-        if (file_exists($file)) {
-            echo file_get_contents($file);
-        } else {
-            echo json_encode(null);
-        }
+        loadJson("$dataDir/model.json", null);
         break;
 
     case 'save-model':
-        $data = file_get_contents('php://input');
-        if ($data) {
-            file_put_contents($dataDir . '/model.json', $data);
-            echo json_encode(['ok' => true]);
-        } else {
-            http_response_code(400);
-            echo json_encode(['error' => 'No data']);
-        }
+        saveJson("$dataDir/model.json", $sizeLimits[$action], fn($d) =>
+            is_array($d)
+            && isset($d['s'], $d['w'], $d['b'])
+            && is_array($d['s']) && is_array($d['w']) && is_array($d['b'])
+        );
         break;
 
     case 'load-training':
-        $file = $dataDir . '/training.json';
-        if (file_exists($file)) {
-            echo file_get_contents($file);
-        } else {
-            echo json_encode([]);
-        }
+        loadJson("$dataDir/training.json", []);
         break;
 
     case 'save-training':
-        $data = file_get_contents('php://input');
-        if ($data) {
-            file_put_contents($dataDir . '/training.json', $data);
-            echo json_encode(['ok' => true]);
-        } else {
-            http_response_code(400);
-            echo json_encode(['error' => 'No data']);
-        }
+        saveJson("$dataDir/training.json", $sizeLimits[$action], fn($d) =>
+            is_array($d) && (empty($d) || (
+                isset($d[0]['input'], $d[0]['output'])
+                && is_array($d[0]['input']) && is_array($d[0]['output'])
+            ))
+        );
         break;
 
     case 'load-stats':
-        $file = $dataDir . '/stats.json';
-        if (file_exists($file)) {
-            echo file_get_contents($file);
-        } else {
-            echo json_encode(['games' => 0, 'best' => 0, 'recent' => []]);
-        }
+        loadJson("$dataDir/stats.json", ['games' => 0, 'best' => 0, 'recent' => []]);
         break;
 
     case 'save-stats':
-        $data = file_get_contents('php://input');
-        if ($data) {
-            file_put_contents($dataDir . '/stats.json', $data);
-            echo json_encode(['ok' => true]);
-        } else {
-            http_response_code(400);
-            echo json_encode(['error' => 'No data']);
-        }
+        saveJson("$dataDir/stats.json", $sizeLimits[$action], fn($d) =>
+            is_array($d)
+            && isset($d['games'], $d['best'], $d['recent'])
+            && is_numeric($d['games']) && is_numeric($d['best'])
+            && is_array($d['recent'])
+            && count($d['recent']) <= 50
+        );
         break;
 
     default:
