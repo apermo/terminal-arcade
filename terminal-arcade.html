@@ -419,17 +419,22 @@ function buildInput(boardFeatures, pieceType) {
 
 // Score a board state for the heuristic fallback
 function heuristicScore(features) {
-  // Super-linear line clear bonus: heavily reward multi-line clears
-  // 0→0, 1→1.5, 2→5.0, 3→10.5, 4 lines→18.0
   const lc = features[1]; // complete / 4
-  const lineBonus = lc * 2 + lc * lc * 16;
+
+  // Quadratic line clear reward: 1→3, 2→12, 3→27, 4→48
+  const lineBonus = lc * lc * 48;
+
+  // Reward moderate well depth (setup for I-piece), penalize excessive wells
+  const w = features[5];
+  const wellBonus = w * 3 - w * w * 8;
 
   return lineBonus
-    - features[0] * 3              // aggregate height
-    - features[2] * 8              // holes (heavy penalty)
-    - features[2] * features[2] * 5 // exponential hole penalty
-    - features[3] * 1.5            // bumpiness (reduced to allow well formation)
-    - features[4] * 3              // max height
+    - features[0] * 1              // aggregate height (light — allow building)
+    - features[2] * 15             // holes (severe — the main enemy)
+    - features[2] * features[2] * 10 // exponential hole penalty
+    - features[3] * 0.5            // bumpiness (very light — allow well formation)
+    - features[4] * 2              // max height (survival pressure at top)
+    + wellBonus
     + 0.5;
 }
 
@@ -548,14 +553,14 @@ async function trainAfterGame() {
     const survival = i / totalMoves;
     const gameQuality = Math.min(finalScore / bestKnown, 1);
 
-    // Board quality is the primary signal (objective, not circular)
+    // Board quality aligned with heuristic: clears > holes > survival
     const holePenalty = f[2] * f[2];
     const boardQuality =
-        (1 - holePenalty) * 0.35   // holes punished hard (exponential)
-      + f[1] * 0.25               // line clears rewarded
-      + (1 - f[0]) * 0.15         // lower height preferred
-      + (1 - f[3]) * 0.1          // less bumpy preferred
-      + (1 - f[4]) * 0.15;        // lower max height preferred
+        (1 - holePenalty) * 0.40   // holes: primary enemy
+      + f[1] * 0.35               // line clears: primary goal
+      + (1 - f[4]) * 0.10         // max height: survival pressure
+      + f[5] * 0.10               // wells: setup for multi-line clears
+      + (1 - f[0]) * 0.05;        // aggregate height: very mild
 
     // Moves creating many holes get heavily penalized
     const holeOverride = f[2] > 0.3 ? 0.5 : 1.0;
