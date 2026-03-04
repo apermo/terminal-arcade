@@ -66,7 +66,7 @@
     <div class="dot r"></div>
     <div class="dot y"></div>
     <div class="dot g"></div>
-    <button id="mute-btn" class="tb-btn">SND</button>
+    <button id="mute-btn" class="tb-btn">SND*</button>
     <button id="new-game-btn" class="tb-btn">NEW GAME</button>
   </div>
   <div id="screen"></div>
@@ -175,7 +175,7 @@ let loopTimer, restartTimer;
 // ═══════════════════════════════════════════════════════════
 // Audio - 8-bit chiptune via Web Audio API
 // ═══════════════════════════════════════════════════════════
-let audioCtx, masterGain, isMuted = false;
+let audioCtx, masterGain, isMuted = true;
 
 const NOTE_FREQ = {
   'A2': 110.00, 'E3': 164.81, 'A3': 220.00, 'B3': 246.94,
